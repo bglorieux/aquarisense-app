@@ -7,7 +7,20 @@ import {
   StatusBar,
   RefreshControl,
   ScrollView,
+  TouchableOpacity,
 } from 'react-native';
+import {NavigationContainer} from '@react-navigation/native';
+import {createNativeStackNavigator} from '@react-navigation/native-stack';
+import {AuthProvider, useAuth} from './src/context/AuthContext';
+
+// Auth Screens
+import WelcomeScreen from './src/screens/auth/WelcomeScreen';
+import SignUpScreen from './src/screens/auth/SignUpScreen';
+import SignInScreen from './src/screens/auth/SignInScreen';
+import ConfirmEmailScreen from './src/screens/auth/ConfirmEmailScreen';
+
+// Activation Screens
+import AddDeviceScreen from './src/screens/activation/AddDeviceScreen';
 
 const API_URL = 'https://0i944omjwf.execute-api.eu-central-1.amazonaws.com/readings';
 
@@ -61,11 +74,13 @@ const getStatus = (type: string, value: number) => {
   return {status: 'Warning', color: COLORS.gold};
 };
 
-const App = () => {
+// Dashboard Screen (your existing app)
+const DashboardScreen = ({navigation}: any) => {
   const [sensorData, setSensorData] = useState<any>(null);
   const [lastUpdate, setLastUpdate] = useState('--:--:--');
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const {user, signOut} = useAuth();
 
   const fetchData = async () => {
     try {
@@ -88,7 +103,7 @@ const App = () => {
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 5000); // Refresh every 5 seconds
+    const interval = setInterval(fetchData, 5000);
     return () => clearInterval(interval);
   }, []);
 
@@ -114,10 +129,18 @@ const App = () => {
         <View style={styles.header}>
           <Text style={styles.logo}>🐠 AquariSense</Text>
           <View style={styles.headerRight}>
-            <Text style={[styles.cloudStatus, {color: sensorData ? COLORS.green : COLORS.red}]}>
-              ☁ {sensorData ? 'Connected' : 'Offline'}
-            </Text>
+            <TouchableOpacity onPress={signOut} style={styles.signOutButton}>
+              <Text style={styles.signOutText}>Sign Out</Text>
+            </TouchableOpacity>
           </View>
+        </View>
+
+        {/* Welcome message */}
+        <View style={styles.welcomeBar}>
+          <Text style={styles.welcomeText}>Welcome, {user?.name || 'User'}!</Text>
+          <Text style={[styles.cloudStatus, {color: sensorData ? COLORS.green : COLORS.red}]}>
+            ☁ {sensorData ? 'Connected' : 'Offline'}
+          </Text>
         </View>
 
         {error && (
@@ -157,6 +180,14 @@ const App = () => {
           />
         </View>
 
+        {/* Add Device Button */}
+        <TouchableOpacity 
+          style={styles.addDeviceButton}
+          onPress={() => navigation.navigate('AddDevice')}
+        >
+          <Text style={styles.addDeviceText}>+ Add Another Device</Text>
+        </TouchableOpacity>
+
         {/* Footer */}
         <View style={styles.footer}>
           <Text style={styles.lastUpdate}>Last update: {lastUpdate}</Text>
@@ -167,10 +198,67 @@ const App = () => {
   );
 };
 
+const Stack = createNativeStackNavigator();
+
+function AuthStack() {
+  return (
+    <Stack.Navigator screenOptions={{headerShown: false}}>
+      <Stack.Screen name="Welcome" component={WelcomeScreen} />
+      <Stack.Screen name="SignUp" component={SignUpScreen} />
+      <Stack.Screen name="SignIn" component={SignInScreen} />
+      <Stack.Screen name="ConfirmEmail" component={ConfirmEmailScreen} />
+    </Stack.Navigator>
+  );
+}
+
+function AppStack() {
+  return (
+    <Stack.Navigator screenOptions={{headerShown: false}}>
+      <Stack.Screen name="Dashboard" component={DashboardScreen} />
+      <Stack.Screen name="AddDevice" component={AddDeviceScreen} />
+    </Stack.Navigator>
+  );
+}
+
+function RootNavigator() {
+  const {user, loading} = useAuth();
+
+  if (loading) {
+    return (
+      <View style={[styles.container, styles.centered]}>
+        <Text style={styles.logo}>🐠 AquariSense</Text>
+        <Text style={styles.loadingText}>Loading...</Text>
+      </View>
+    );
+  }
+
+  return (
+    <NavigationContainer>
+      {user ? <AppStack /> : <AuthStack />}
+    </NavigationContainer>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <RootNavigator />
+    </AuthProvider>
+  );
+}
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.bgDark,
+  },
+  centered: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    color: COLORS.textMuted,
+    marginTop: 10,
   },
   scrollContent: {
     flexGrow: 1,
@@ -190,6 +278,24 @@ const styles = StyleSheet.create({
   headerRight: {
     flexDirection: 'row',
     alignItems: 'center',
+  },
+  signOutButton: {
+    padding: 8,
+  },
+  signOutText: {
+    color: COLORS.teal,
+    fontSize: 14,
+  },
+  welcomeBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingBottom: 10,
+  },
+  welcomeText: {
+    color: COLORS.textLight,
+    fontSize: 16,
   },
   cloudStatus: {
     fontSize: 14,
@@ -249,6 +355,20 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#5a6a7a',
   },
+  addDeviceButton: {
+    marginHorizontal: 15,
+    marginBottom: 15,
+    padding: 15,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.teal,
+    borderStyle: 'dashed',
+    alignItems: 'center',
+  },
+  addDeviceText: {
+    color: COLORS.teal,
+    fontSize: 16,
+  },
   footer: {
     paddingHorizontal: 20,
     paddingVertical: 15,
@@ -265,5 +385,3 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
 });
-
-export default App;

@@ -1,0 +1,384 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AquariSense Auth & Device Management - Extends existing IoT setup
+
+# ============================================
+# This stack adds user authentication and device
+# linking to your existing AquariSense setup.
+# 
+# Existing resources (DO NOT RECREATE):
+# - IoT Core: aquarisense-device-01
+# - DynamoDB: aquarisense-readings
+# - Lambda: aquarisense-get-readings
+# - API Gateway: 0i944omjwf
+# ============================================
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - prod
+
+Resources:
+  # ============================================
+  # COGNITO - User Authentication
+  # ============================================
+  
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub aquarisense-users-${Environment}
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+      UsernameConfiguration:
+        CaseSensitive: false
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+          RequireUppercase: true
+      Schema:
+        - Name: name
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+        - Name: email
+          AttributeDataType: String
+          Mutable: false
+          Required: true
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub aquarisense-app-${Environment}
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_SRP_AUTH
+      PreventUserExistenceErrors: ENABLED
+      SupportedIdentityProviders:
+        - COGNITO
+
+  # ============================================
+  # DYNAMODB - Users & Devices Tables
+  # (aquarisense-readings already exists)
+  # ============================================
+
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub aquarisense-users-${Environment}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: email
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: email-index
+          KeySchema:
+            - AttributeName: email
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+
+  DevicesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub aquarisense-devices-${Environment}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: serialNumber
+          AttributeType: S
+        - AttributeName: userId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: serialNumber
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: userId-index
+          KeySchema:
+            - AttributeName: userId
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+
+  # ============================================
+  # LAMBDA - Device Linking
+  # ============================================
+
+  LinkDeviceLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub aquarisense-link-device-role-${Environment}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                Resource:
+                  - !GetAtt DevicesTable.Arn
+                  - !Sub ${DevicesTable.Arn}/index/*
+
+  LinkDeviceFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub aquarisense-link-device-${Environment}
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt LinkDeviceLambdaRole.Arn
+      Timeout: 10
+      Environment:
+        Variables:
+          DEVICES_TABLE: !Ref DevicesTable
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          from datetime import datetime
+          
+          dynamodb = boto3.resource('dynamodb')
+          table = dynamodb.Table(os.environ['DEVICES_TABLE'])
+          
+          def lambda_handler(event, context):
+              try:
+                  body = json.loads(event.get('body', '{}'))
+                  serial_number = body.get('serialNumber')
+                  user_id = body.get('userId')
+                  
+                  if not serial_number or not user_id:
+                      return response(400, {'error': 'serialNumber and userId required'})
+                  
+                  # Validate serial number format: AQS-XX-M01-YY-NNNNNN
+                  import re
+                  if not re.match(r'^AQS-[A-Z]{2}-M\d{2}-\d{2}-\d{6}$', serial_number):
+                      return response(400, {'error': 'Invalid serial number format'})
+                  
+                  # Check if device exists and is available
+                  existing = table.get_item(Key={'serialNumber': serial_number})
+                  
+                  if 'Item' in existing:
+                      if existing['Item'].get('userId'):
+                          if existing['Item']['userId'] == user_id:
+                              return response(200, {'message': 'Device already linked to your account', 'device': existing['Item']})
+                          else:
+                              return response(409, {'error': 'Device already linked to another account'})
+                  
+                  # Link device to user
+                  device = {
+                      'serialNumber': serial_number,
+                      'userId': user_id,
+                      'linkedAt': datetime.utcnow().isoformat(),
+                      'status': 'pending_wifi',
+                      'name': 'My AquariSense'
+                  }
+                  
+                  table.put_item(Item=device)
+                  
+                  return response(200, {'message': 'Device linked successfully', 'device': device})
+                  
+              except Exception as e:
+                  print(f"Error: {e}")
+                  return response(500, {'error': str(e)})
+          
+          def response(status_code, body):
+              return {
+                  'statusCode': status_code,
+                  'headers': {
+                      'Access-Control-Allow-Origin': '*',
+                      'Access-Control-Allow-Headers': 'Content-Type,Authorization',
+                      'Content-Type': 'application/json'
+                  },
+                  'body': json.dumps(body)
+              }
+
+  GetUserDevicesFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub aquarisense-get-user-devices-${Environment}
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt LinkDeviceLambdaRole.Arn
+      Timeout: 10
+      Environment:
+        Variables:
+          DEVICES_TABLE: !Ref DevicesTable
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          from decimal import Decimal
+          
+          dynamodb = boto3.resource('dynamodb')
+          table = dynamodb.Table(os.environ['DEVICES_TABLE'])
+          
+          def decimal_default(obj):
+              if isinstance(obj, Decimal):
+                  return float(obj)
+              raise TypeError
+          
+          def lambda_handler(event, context):
+              try:
+                  # Get userId from path or query params
+                  user_id = event.get('pathParameters', {}).get('userId')
+                  if not user_id:
+                      user_id = event.get('queryStringParameters', {}).get('userId')
+                  
+                  if not user_id:
+                      return response(400, {'error': 'userId required'})
+                  
+                  # Query devices for this user
+                  result = table.query(
+                      IndexName='userId-index',
+                      KeyConditionExpression='userId = :uid',
+                      ExpressionAttributeValues={':uid': user_id}
+                  )
+                  
+                  devices = result.get('Items', [])
+                  
+                  return response(200, {'devices': devices})
+                  
+              except Exception as e:
+                  print(f"Error: {e}")
+                  return response(500, {'error': str(e)})
+          
+          def response(status_code, body):
+              return {
+                  'statusCode': status_code,
+                  'headers': {
+                      'Access-Control-Allow-Origin': '*',
+                      'Content-Type': 'application/json'
+                  },
+                  'body': json.dumps(body, default=decimal_default)
+              }
+
+  # ============================================
+  # API GATEWAY - New endpoints
+  # (Add to existing API or create new one)
+  # ============================================
+
+  DevicesApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub aquarisense-devices-api-${Environment}
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins:
+          - '*'
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        AllowHeaders:
+          - Content-Type
+          - Authorization
+
+  DevicesApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref DevicesApi
+      StageName: $default
+      AutoDeploy: true
+
+  LinkDeviceIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref DevicesApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt LinkDeviceFunction.Arn
+      PayloadFormatVersion: '2.0'
+
+  LinkDeviceRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref DevicesApi
+      RouteKey: POST /devices/link
+      Target: !Sub integrations/${LinkDeviceIntegration}
+
+  GetUserDevicesIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref DevicesApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt GetUserDevicesFunction.Arn
+      PayloadFormatVersion: '2.0'
+
+  GetUserDevicesRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref DevicesApi
+      RouteKey: GET /devices
+      Target: !Sub integrations/${GetUserDevicesIntegration}
+
+  # Lambda permissions for API Gateway
+  LinkDevicePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LinkDeviceFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${DevicesApi}/*/*
+
+  GetUserDevicesPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref GetUserDevicesFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${DevicesApi}/*/*
+
+# ============================================
+# OUTPUTS
+# ============================================
+
+Outputs:
+  UserPoolId:
+    Description: Cognito User Pool ID
+    Value: !Ref UserPool
+
+  UserPoolClientId:
+    Description: Cognito User Pool Client ID
+    Value: !Ref UserPoolClient
+
+  DevicesApiUrl:
+    Description: API Gateway URL for device management
+    Value: !Sub https://${DevicesApi}.execute-api.${AWS::Region}.amazonaws.com
+
+  UsersTableName:
+    Description: DynamoDB Users Table
+    Value: !Ref UsersTable
+
+  DevicesTableName:
+    Description: DynamoDB Devices Table
+    Value: !Ref DevicesTable
