@@ -1,13 +1,25 @@
 import awsConfig from '../config/aws';
 
 class ApiService {
-  // Link a device to the current user
+  setToken(token) {
+    this.token = token;
+  }
+
+  getAuthHeaders() {
+    const headers = {
+      'Content-Type': 'application/json',
+    };
+    if (this.token) {
+      headers['Authorization'] = `Bearer ${this.token}`;
+    }
+    return headers;
+  }
+
   async linkDevice(serialNumber, userId) {
-    const response = await fetch(`${awsConfig.API.devices}/devices/link`, {
+    const url = awsConfig.API.devices + '/devices/link';
+    const response = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: this.getAuthHeaders(),
       body: JSON.stringify({
         serialNumber,
         userId,
@@ -15,50 +27,42 @@ class ApiService {
     });
 
     const data = await response.json();
-    
+
     if (!response.ok) {
       throw new Error(data.error || 'Failed to link device');
     }
-    
+
     return data;
   }
 
-  // Get all devices for a user
   async getUserDevices(userId) {
-    const response = await fetch(
-      `${awsConfig.API.devices}/devices?userId=${encodeURIComponent(userId)}`,
-      {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      }
-    );
-
-    const data = await response.json();
-    
-    if (!response.ok) {
-      throw new Error(data.error || 'Failed to get devices');
-    }
-    
-    return data.devices || [];
-  }
-
-  // Get latest sensor readings (uses your existing API)
-  async getLatestReadings() {
-    const response = await fetch(awsConfig.API.readings, {
+    const url = awsConfig.API.devices + '/devices?userId=' + encodeURIComponent(userId);
+    const response = await fetch(url, {
       method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: this.getAuthHeaders(),
     });
 
     const data = await response.json();
-    
+
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to get devices');
+    }
+
+    return data.devices || [];
+  }
+
+  async getLatestReadings() {
+    const response = await fetch(awsConfig.API.readings, {
+      method: 'GET',
+      headers: this.getAuthHeaders(),
+    });
+
+    const data = await response.json();
+
     if (!response.ok) {
       throw new Error(data.error || 'Failed to get readings');
     }
-    
+
     return data;
   }
 }
