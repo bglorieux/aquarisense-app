@@ -14,6 +14,7 @@ import {NavigationContainer} from '@react-navigation/native';
 import {createNativeStackNavigator} from '@react-navigation/native-stack';
 import {AuthProvider, useAuth} from './src/context/AuthContext';
 import apiService from './src/services/api';
+import deviceStorage from './src/services/deviceStorage';
 import WiFiSetupScreen from './src/screens/setup/WiFiSetupScreen';
 
 
@@ -133,8 +134,18 @@ const DashboardScreen = ({navigation, route}: any) => {
   const [error, setError] = useState<string | null>(null);
   const {user, signOut} = useAuth();
 
-  // Check if we just completed WiFi setup (runs once on mount)
+  // Load saved devices from storage on mount
   useEffect(() => {
+    const loadSavedDevices = async () => {
+      const savedDevices = await deviceStorage.loadDevices();
+      if (savedDevices.length > 0) {
+        setDevices(savedDevices);
+        setSelectedDevice(savedDevices[0]);
+      }
+      setLoadingDevices(false);
+    };
+
+    // If coming from WiFi setup, add the new device
     if (route.params?.deviceConnected && route.params?.serialNumber) {
       console.log('Device connected from WiFi setup:', route.params.serialNumber);
       const newDevice = {
@@ -142,20 +153,27 @@ const DashboardScreen = ({navigation, route}: any) => {
         name: 'My AquariSense',
         status: 'online',
       };
-      setDevices([newDevice]);
-      setSelectedDevice(newDevice);
-      setLoadingDevices(false);
+      // Save to storage and update state
+      deviceStorage.addDevice(newDevice).then(allDevices => {
+        setDevices(allDevices);
+        setSelectedDevice(newDevice);
+        setLoadingDevices(false);
+      });
+    } else {
+      // No new device, just load from storage
+      loadSavedDevices();
     }
   }, []); // Empty deps - only run on mount
 
   const fetchDevices = useCallback(async () => {
     if (!user?.sub) return;
 
-    // TEST MODE: Use mock data instead of API
+    // TEST MODE: Load from local storage instead of API
     if (TEST_MODE) {
-      // Keep existing devices if we have them
-      if (devices.length === 0) {
-        setDevices([]);
+      const savedDevices = await deviceStorage.loadDevices();
+      if (savedDevices.length > 0 && devices.length === 0) {
+        setDevices(savedDevices);
+        setSelectedDevice(savedDevices[0]);
       }
       setLoadingDevices(false);
       return;

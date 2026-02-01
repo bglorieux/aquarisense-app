@@ -5,32 +5,67 @@ import {
   AuthenticationDetails,
   CognitoUserAttribute,
 } from 'amazon-cognito-identity-js';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import awsConfig from '../config/aws';
 
-// Use in-memory storage (simpler, works reliably)
-const memoryStorage = {
-  data: {},
+// AsyncStorage-backed storage for Cognito (with sync cache)
+// Cognito SDK needs sync methods, so we cache in memory and persist async
+const AUTH_STORAGE_KEY = '@aquarisense_auth_';
+let storageCache = {};
+let storageLoaded = false;
+
+const asyncStorage = {
   setItem(key, value) {
-    this.data[key] = value;
+    storageCache[key] = value;
+    // Persist async (fire and forget)
+    AsyncStorage.setItem(AUTH_STORAGE_KEY + key, value).catch(e =>
+      console.log('Auth storage write error:', e)
+    );
     return value;
   },
   getItem(key) {
-    return this.data[key] || null;
+    return storageCache[key] || null;
   },
   removeItem(key) {
-    delete this.data[key];
+    delete storageCache[key];
+    AsyncStorage.removeItem(AUTH_STORAGE_KEY + key).catch(e =>
+      console.log('Auth storage remove error:', e)
+    );
     return true;
   },
   clear() {
-    this.data = {};
+    const keys = Object.keys(storageCache);
+    storageCache = {};
+    keys.forEach(key => {
+      AsyncStorage.removeItem(AUTH_STORAGE_KEY + key).catch(() => {});
+    });
     return true;
   },
+  // Load cached data from AsyncStorage (call on app start)
+  async loadFromStorage() {
+    try {
+      const allKeys = await AsyncStorage.getAllKeys();
+      const authKeys = allKeys.filter(k => k.startsWith(AUTH_STORAGE_KEY));
+      if (authKeys.length > 0) {
+        const pairs = await AsyncStorage.multiGet(authKeys);
+        pairs.forEach(([key, value]) => {
+          const shortKey = key.replace(AUTH_STORAGE_KEY, '');
+          storageCache[shortKey] = value;
+        });
+      }
+      storageLoaded = true;
+      console.log('Auth storage loaded:', Object.keys(storageCache).length, 'items');
+    } catch (e) {
+      console.log('Auth storage load error:', e);
+      storageLoaded = true;
+    }
+  }
 };
 
 const userPool = new CognitoUserPool({
   UserPoolId: awsConfig.Auth.userPoolId,
   ClientId: awsConfig.Auth.userPoolWebClientId,
-  Storage: memoryStorage,
+  Storage: asyncStorage,
 });
 
 const AuthContext = createContext({});
@@ -40,8 +75,37 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // With memory storage, no persisted session on app restart
-    setLoading(false);
+    // Load auth storage then check for existing session
+    const initAuth = async () => {
+      await asyncStorage.loadFromStorage();
+
+      // Check if there's an existing session
+      const cognitoUser = userPool.getCurrentUser();
+      if (cognitoUser) {
+        cognitoUser.getSession((err, session) => {
+          if (!err && session && session.isValid()) {
+            // Restore user data
+            cognitoUser.getUserAttributes((attrErr, attributes) => {
+              if (!attrErr && attributes) {
+                const userData = { sub: cognitoUser.getUsername() };
+                attributes.forEach(attr => {
+                  userData[attr.Name] = attr.Value;
+                });
+                setUser(userData);
+                console.log('Session restored for:', userData.email || userData.sub);
+              }
+              setLoading(false);
+            });
+          } else {
+            setLoading(false);
+          }
+        });
+      } else {
+        setLoading(false);
+      }
+    };
+
+    initAuth();
   }, []);
 
   const signUp = (email, password, name) => {
@@ -66,7 +130,7 @@ export function AuthProvider({ children }) {
       const cognitoUser = new CognitoUser({
         Username: email,
         Pool: userPool,
-        Storage: memoryStorage,
+        Storage: asyncStorage,
       });
       cognitoUser.confirmRegistration(code, true, (err, result) => {
         if (err) {
@@ -84,7 +148,7 @@ export function AuthProvider({ children }) {
       const cognitoUser = new CognitoUser({
         Username: email,
         Pool: userPool,
-        Storage: memoryStorage,
+        Storage: asyncStorage,
       });
       cognitoUser.resendConfirmationCode((err, result) => {
         if (err) reject(err);
@@ -98,7 +162,7 @@ export function AuthProvider({ children }) {
       const cognitoUser = new CognitoUser({
         Username: email,
         Pool: userPool,
-        Storage: memoryStorage,
+        Storage: asyncStorage,
       });
       const authDetails = new AuthenticationDetails({
         Username: email,
