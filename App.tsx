@@ -121,7 +121,7 @@ const getStatus = (type: string, value: number) => {
 };
 
 // TEST MODE: Set to true to bypass backend API
-const TEST_MODE = true;
+const TEST_MODE = false;
 
 // Dashboard Screen
 const DashboardScreen = ({navigation, route}: any) => {

@@ -1,17 +1,8 @@
-/**
- * @format
- */
-
-import { AppRegistry, LogBox } from 'react-native';
+import {AppRegistry, LogBox} from 'react-native';
 import App from './App';
-import { name as appName } from './app.json';
+import {name as appName} from './app.json';
 
-// Hide dev menu overlay warnings
+// Suppress yellow warning boxes in development
 LogBox.ignoreAllLogs(true);
-
-// Disable the dev menu if in dev mode
-if (__DEV__) {
-  require('react-native').DevSettings.setHotLoadingEnabled(false);
-}
 
 AppRegistry.registerComponent(appName, () => App);
