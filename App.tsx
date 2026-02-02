@@ -15,7 +15,9 @@ import {createNativeStackNavigator} from '@react-navigation/native-stack';
 import {AuthProvider, useAuth} from './src/context/AuthContext';
 import apiService from './src/services/api';
 import deviceStorage from './src/services/deviceStorage';
+import readingsStorage from './src/services/readingsStorage';
 import WiFiSetupScreen from './src/screens/setup/WiFiSetupScreen';
+import SensorChart from './src/components/SensorChart';
 
 
 // Auth Screens
@@ -128,9 +130,11 @@ const DashboardScreen = ({navigation, route}: any) => {
   const [devices, setDevices] = useState<any[]>([]);
   const [selectedDevice, setSelectedDevice] = useState<any>(null);
   const [sensorData, setSensorData] = useState<any>(null);
+  const [historicalReadings, setHistoricalReadings] = useState<any[]>([]);
   const [lastUpdate, setLastUpdate] = useState('--:--:--');
   const [refreshing, setRefreshing] = useState(false);
   const [loadingDevices, setLoadingDevices] = useState(true);
+  const [loadingHistory, setLoadingHistory] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const {user, signOut} = useAuth();
 
@@ -205,6 +209,34 @@ const DashboardScreen = ({navigation, route}: any) => {
     setLoadingDevices(false);
   }, [user?.sub, selectedDevice]);
 
+  // Load historical readings on mount and when device changes
+  const loadHistoricalReadings = useCallback(async () => {
+    if (!selectedDevice) return;
+
+    setLoadingHistory(true);
+    try {
+      // First try to get from API
+      const apiHistory = await apiService.getHistoricalReadings(
+        selectedDevice.serialNumber,
+        24
+      );
+
+      if (apiHistory && apiHistory.length > 0) {
+        setHistoricalReadings(apiHistory);
+      } else {
+        // Fall back to local storage
+        const localHistory = await readingsStorage.getReadings(24);
+        setHistoricalReadings(localHistory);
+      }
+    } catch (e) {
+      console.error('Failed to load historical readings:', e);
+      // Use local storage as fallback
+      const localHistory = await readingsStorage.getReadings(24);
+      setHistoricalReadings(localHistory);
+    }
+    setLoadingHistory(false);
+  }, [selectedDevice]);
+
   const fetchSensorData = useCallback(async () => {
     if (!selectedDevice || selectedDevice.status !== 'online') {
       setSensorData(null);
@@ -215,6 +247,25 @@ const DashboardScreen = ({navigation, route}: any) => {
       setSensorData(data);
       setLastUpdate(new Date().toLocaleTimeString());
       setError(null);
+
+      // Accumulate reading in local storage for historical chart
+      if (data) {
+        await readingsStorage.addReading(data);
+        // Update chart data with new reading
+        setHistoricalReadings(prev => {
+          const newReading = {
+            timestamp: new Date().toISOString(),
+            temperature: data.temperature,
+            tds: data.tds,
+            turbidity: data.turbidity,
+            device_id: data.device_id,
+          };
+          // Keep last 24 hours worth of readings
+          const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+          const filtered = prev.filter(r => new Date(r.timestamp) >= cutoff);
+          return [...filtered, newReading];
+        });
+      }
     } catch (e) {
       console.error('Failed to fetch sensor data:', e);
     }
@@ -233,6 +284,10 @@ const DashboardScreen = ({navigation, route}: any) => {
       fetchDevices();
     }
   }, [fetchDevices, route.params?.deviceConnected]);
+
+  useEffect(() => {
+    loadHistoricalReadings();
+  }, [loadHistoricalReadings]);
 
   useEffect(() => {
     fetchSensorData();
@@ -366,6 +421,12 @@ const DashboardScreen = ({navigation, route}: any) => {
                       statusColor={turbStatus.color}
                       color={COLORS.gold}
                       range="0-50 NTU"
+                    />
+
+                    {/* Historical Chart */}
+                    <SensorChart
+                      readings={historicalReadings}
+                      loading={loadingHistory}
                     />
                   </View>
                 ) : (

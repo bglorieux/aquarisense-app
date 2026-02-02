@@ -65,6 +65,32 @@ class ApiService {
 
     return data;
   }
+
+  async getHistoricalReadings(deviceId, hours = 24) {
+    // Calculate time range
+    const endTime = new Date().toISOString();
+    const startTime = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+
+    const url = `${awsConfig.API.readings}?deviceId=${encodeURIComponent(deviceId)}&startTime=${encodeURIComponent(startTime)}&endTime=${encodeURIComponent(endTime)}`;
+
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: this.getAuthHeaders(),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to get historical readings');
+      }
+
+      return data.readings || data;
+    } catch (error) {
+      console.log('Historical API not available, using local data:', error.message);
+      return null; // Signal to use local accumulation
+    }
+  }
 }
 
 export default new ApiService();
