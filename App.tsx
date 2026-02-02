@@ -168,31 +168,42 @@ const DashboardScreen = ({navigation, route}: any) => {
   const fetchDevices = useCallback(async () => {
     if (!user?.sub) return;
 
-    // TEST MODE: Load from local storage instead of API
-    if (TEST_MODE) {
-      const savedDevices = await deviceStorage.loadDevices();
-      if (savedDevices.length > 0 && devices.length === 0) {
-        setDevices(savedDevices);
+    // Always load from local storage first (offline-first approach)
+    const savedDevices = await deviceStorage.loadDevices();
+    if (savedDevices.length > 0) {
+      setDevices(savedDevices);
+      if (!selectedDevice) {
         setSelectedDevice(savedDevices[0]);
       }
-      setLoadingDevices(false);
-      return;
     }
 
-    try {
-      const userDevices = await apiService.getUserDevices(user.sub);
-      setDevices(userDevices);
-      if (userDevices.length > 0 && !selectedDevice) {
-        setSelectedDevice(userDevices[0]);
+    // Then try to sync with backend (if not in TEST_MODE)
+    if (!TEST_MODE) {
+      try {
+        const userDevices = await apiService.getUserDevices(user.sub);
+        if (userDevices.length > 0) {
+          // Merge backend devices with local devices
+          const mergedDevices = [...savedDevices];
+          userDevices.forEach((backendDevice: any) => {
+            const exists = mergedDevices.find(d => d.serialNumber === backendDevice.serialNumber);
+            if (!exists) {
+              mergedDevices.push(backendDevice);
+            }
+          });
+          if (mergedDevices.length > savedDevices.length) {
+            setDevices(mergedDevices);
+            await deviceStorage.saveDevices(mergedDevices);
+          }
+        }
+        setError(null);
+      } catch (e) {
+        console.error('Backend sync failed (using local data):', e);
+        // Don't show error - we have local data
       }
-      setError(null);
-    } catch (e) {
-      console.error('Failed to fetch devices:', e);
-      setError('Failed to load devices');
-    } finally {
-      setLoadingDevices(false);
     }
-  }, [user?.sub, selectedDevice, devices.length]);
+
+    setLoadingDevices(false);
+  }, [user?.sub, selectedDevice]);
 
   const fetchSensorData = useCallback(async () => {
     if (!selectedDevice || selectedDevice.status !== 'online') {
