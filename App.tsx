@@ -49,18 +49,32 @@ type SensorCardProps = {
   statusColor: string;
   color: string;
   range: string;
+  disconnected?: boolean;
 };
 
-const SensorCard = ({title, value, unit, status, statusColor, color, range}: SensorCardProps) => (
-  <View style={styles.card}>
-    <View style={[styles.cardAccent, {backgroundColor: color}]} />
+const SensorCard = ({title, value, unit, status, statusColor, color, range, disconnected}: SensorCardProps) => (
+  <View style={[styles.card, disconnected && styles.cardDisconnected]}>
+    <View style={[styles.cardAccent, {backgroundColor: disconnected ? COLORS.red : color}]} />
     <Text style={styles.cardTitle}>{title}</Text>
-    <Text style={[styles.cardValue, {color}]}>{value}</Text>
-    <Text style={styles.cardUnit}>{unit}</Text>
-    <View style={styles.cardFooter}>
-      <Text style={[styles.cardStatus, {color: statusColor}]}>● {status}</Text>
-      <Text style={styles.cardRange}>{range}</Text>
-    </View>
+    {disconnected ? (
+      <>
+        <Text style={[styles.cardValue, {color: COLORS.textMuted}]}>--</Text>
+        <Text style={styles.cardUnit}>{unit}</Text>
+        <View style={styles.cardFooter}>
+          <Text style={[styles.cardStatus, {color: COLORS.red}]}>⚠ Disconnected</Text>
+          <Text style={styles.cardRange}>{range}</Text>
+        </View>
+      </>
+    ) : (
+      <>
+        <Text style={[styles.cardValue, {color}]}>{value}</Text>
+        <Text style={styles.cardUnit}>{unit}</Text>
+        <View style={styles.cardFooter}>
+          <Text style={[styles.cardStatus, {color: statusColor}]}>● {status}</Text>
+          <Text style={styles.cardRange}>{range}</Text>
+        </View>
+      </>
+    )}
   </View>
 );
 
@@ -309,10 +323,16 @@ const DashboardScreen = ({navigation, route}: any) => {
   const temp = sensorData?.temperature;
   const tds = sensorData?.tds;
   const turb = sensorData?.turbidity;
+  const sensorStatus = sensorData?.sensor_status || {temp: true, tds: true, turb: true};
 
-  const tempStatus = temp != null ? getStatus('temp', temp) : {status: 'Loading', color: COLORS.textMuted};
-  const tdsStatus = tds != null ? getStatus('tds', tds) : {status: 'Loading', color: COLORS.textMuted};
-  const turbStatus = turb != null ? getStatus('turb', turb) : {status: 'Loading', color: COLORS.textMuted};
+  const tempDisconnected = sensorStatus.temp === false;
+  const tdsDisconnected = sensorStatus.tds === false;
+  const turbDisconnected = sensorStatus.turb === false;
+  const hasDisconnectedSensors = tempDisconnected || tdsDisconnected || turbDisconnected;
+
+  const tempStatus = temp != null && !tempDisconnected ? getStatus('temp', temp) : {status: 'Loading', color: COLORS.textMuted};
+  const tdsStatus = tds != null && !tdsDisconnected ? getStatus('tds', tds) : {status: 'Loading', color: COLORS.textMuted};
+  const turbStatus = turb != null && !turbDisconnected ? getStatus('turb', turb) : {status: 'Loading', color: COLORS.textMuted};
 
   if (loadingDevices) {
     return (
@@ -395,6 +415,17 @@ const DashboardScreen = ({navigation, route}: any) => {
                   </View>
                 ) : selectedDevice.status === 'online' ? (
                   <View style={styles.cardsContainer}>
+                    {hasDisconnectedSensors && (
+                      <View style={styles.sensorWarningBanner}>
+                        <Text style={styles.sensorWarningText}>
+                          ⚠ {[
+                            tempDisconnected && 'Temperature',
+                            tdsDisconnected && 'TDS',
+                            turbDisconnected && 'Turbidity'
+                          ].filter(Boolean).join(', ')} sensor disconnected
+                        </Text>
+                      </View>
+                    )}
                     <SensorCard
                       title="TEMPERATURE"
                       value={temp != null ? temp.toFixed(1) : '--'}
@@ -403,6 +434,7 @@ const DashboardScreen = ({navigation, route}: any) => {
                       statusColor={tempStatus.color}
                       color={COLORS.red}
                       range="24-28 °C"
+                      disconnected={tempDisconnected}
                     />
                     <SensorCard
                       title="TDS"
@@ -412,6 +444,7 @@ const DashboardScreen = ({navigation, route}: any) => {
                       statusColor={tdsStatus.color}
                       color={COLORS.teal}
                       range="150-400 ppm"
+                      disconnected={tdsDisconnected}
                     />
                     <SensorCard
                       title="TURBIDITY"
@@ -421,6 +454,7 @@ const DashboardScreen = ({navigation, route}: any) => {
                       statusColor={turbStatus.color}
                       color={COLORS.gold}
                       range="0-50 NTU"
+                      disconnected={turbDisconnected}
                     />
 
                     {/* Historical Chart */}
@@ -765,5 +799,23 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: COLORS.textMuted,
     textAlign: 'center',
+  },
+  cardDisconnected: {
+    opacity: 0.7,
+    borderWidth: 1,
+    borderColor: COLORS.red,
+  },
+  sensorWarningBanner: {
+    backgroundColor: '#3d2a2a',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 15,
+    borderLeftWidth: 4,
+    borderLeftColor: COLORS.red,
+  },
+  sensorWarningText: {
+    color: COLORS.red,
+    fontSize: 14,
+    fontWeight: '500',
   },
 });
